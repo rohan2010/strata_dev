@@ -1,0 +1,103 @@
+# Model routing registry — the one place model choice is expressed.
+#
+#   models:  what is available, what it can do, what it costs
+#   routes:  role -> ordered fallback chain (first is preferred; later entries are
+#            tried only when an earlier one errors, or lacks a needed capability)
+#
+# Subagent manifests name a ROUTE, never a model id. Moving the Reviewer from Opus to
+# Gemini is a one-line edit here — no manifest touched, no Python changed.
+# Run `conductor models` to print the current picture.
+#
+# prices are USD per million tokens. `price:` may be omitted — the model still runs,
+# and its cost reports as unpriced rather than as a misleading $0.
+#
+# !! VERIFY BEFORE FIRST RUN !!
+# Only the Anthropic ids and prices below were carried from a verified source
+# (EXECUTION-PLAN.md section 1). The OpenAI, Gemini, and Ollama entries are structurally
+# correct but their `id:` strings and prices are UNVERIFIED placeholders — confirm each
+# against the provider's current model list and pull the Ollama models locally.
+
+models:
+  # ---- Anthropic ------------------------------------------------------------
+  opus-5:
+    provider: anthropic
+    id: claude-opus-5
+    supports: [tools, structured_output, thinking, vision]
+    price: {input: 5.00, output: 25.00}
+    notes: Long-horizon planning and the code-quality bar. Honours effort up to `max`.
+
+  sonnet-5:
+    provider: anthropic
+    id: claude-sonnet-5
+    supports: [tools, structured_output, thinking, vision]
+    price: {input: 3.00, output: 15.00}
+    notes: Narrow, well-specified work. Intro pricing $2/$10 through 2026-08-31.
+
+  haiku-4-5:
+    provider: anthropic
+    id: claude-haiku-4-5-20251001
+    supports: [tools, structured_output, vision]
+    price: {input: 1.00, output: 5.00}
+    notes: Genuinely mechanical steps only.
+
+  # ---- OpenAI ---------------------------------------------------------------
+  gpt-flagship:
+    provider: openai
+    id: gpt-5.2                      # TODO verify against your account's model list
+    supports: [tools, structured_output, thinking, vision]
+    notes: UNVERIFIED id/price. Effort clamps to `high` — no xhigh/max on this provider.
+
+  # ---- Google Gemini --------------------------------------------------------
+  gemini-pro:
+    provider: google_genai
+    id: gemini-3-pro                 # TODO verify
+    supports: [tools, structured_output, thinking, vision]
+    notes: UNVERIFIED id/price. Effort clamps to `high`.
+
+  gemini-flash:
+    provider: google_genai
+    id: gemini-3-flash               # TODO verify
+    supports: [tools, structured_output, vision]
+    notes: UNVERIFIED id/price. Cheap tier for bounded work.
+
+  # ---- Ollama (local) -------------------------------------------------------
+  # Local models are free to run, so price is a real 0 rather than an unknown.
+  local-small:
+    provider: ollama
+    id: qwen3:8b                     # TODO `ollama pull` before routing anything here
+    supports: [tools, structured_output, thinking]
+    price: {input: 0.0, output: 0.0}
+    notes: Reasoning is a bool here, not a scale — effort >= high turns it on.
+
+  local-tiny:
+    provider: ollama
+    id: llama3.2:3b                  # TODO `ollama pull`
+    supports: [structured_output]
+    price: {input: 0.0, output: 0.0}
+    notes: Classification and routing heuristics. No tool use.
+
+# Roles the orchestrator dispatches. A subagent manifest's `route:` must name one of
+# these, or fall through to default_route.
+routes:
+  # Planning is where model quality compounds into everything downstream — the plan
+  # calls this out as the thing to fix first if it goes wrong.
+  planner:      [opus-5, gemini-pro]
+  orchestrator: [opus-5, gemini-pro]
+
+  implementer:  [opus-5, gpt-flagship]
+
+  # Cross-provider review on purpose: a reviewer that shares the implementer's model
+  # shares its blind spots. Gemini first, Opus as the fallback.
+  reviewer:     [gemini-pro, opus-5]
+
+  tester:       [sonnet-5, gemini-flash]
+  doc_writer:   [sonnet-5, gemini-flash]
+  synthesizer:  [sonnet-5, gemini-pro]
+  ticket_writer: [sonnet-5, gemini-flash]
+
+  # Mechanical steps. Local first so they cost nothing; a hosted cheap tier catches
+  # the case where Ollama is not running.
+  classifier:   [local-tiny, haiku-4-5]
+  cleanup:      [local-small, haiku-4-5]
+
+default_route: orchestrator
