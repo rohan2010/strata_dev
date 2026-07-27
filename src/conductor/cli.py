@@ -8,6 +8,7 @@ reading four YAML files at once.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import typer
@@ -18,7 +19,18 @@ from conductor.audit import AuditStore
 from conductor.connectors import ConnectorRegistry, GitHubConnector
 from conductor.models import Capability, ModelClient, ModelRegistry, clamp_effort
 from conductor.orchestration import Orchestrator, sqlite_checkpointer
+from conductor.secrets import (
+    GITHUB_ENV_VAR,
+    PROVIDER_ENV_VARS,
+    credential_for,
+    has_credential,
+    load_env,
+)
 from conductor.subagents import SubagentRegistry
+
+# Load .env before any provider client is constructed — the provider packages read their
+# own env vars at construction time, so this has to happen at import, not per command.
+load_env()
 
 app = typer.Typer(help="Multi-agent orchestrator", no_args_is_help=True)
 models_app = typer.Typer(help="Inspect model routing", no_args_is_help=False)
@@ -202,8 +214,10 @@ def doctor(
         console.print(f"[red]subagents:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    console.print(f"[green]ok[/green] {len(registry.models)} models, "
-                  f"{len(registry.routes)} routes, {len(subagents)} subagents")
+    console.print(
+        f"[green]ok[/green] {len(registry.models)} models, "
+        f"{len(registry.routes)} routes, {len(subagents)} subagents"
+    )
 
     for name, route in subagents.validate_routes(registry):
         problems.append(
@@ -234,6 +248,36 @@ def doctor(
     for m in subagents.all():
         if missing := connectors.validate_manifest(m):
             problems.append(f"{m.name} declares unknown tools: {', '.join(missing)}")
+
+    # Credentials: a missing key is only a problem if a route can actually reach that
+    # provider. An unused OpenAI entry in models.yaml should not fail `doctor`.
+    reachable = {registry.models[a].provider for chain in registry.routes.values() for a in chain}
+    creds = Table(title="Credentials", header_style="bold")
+    for col in ("provider", "env var", "status"):
+        creds.add_column(col)
+    for provider in sorted(reachable, key=str):
+        variables = PROVIDER_ENV_VARS.get(provider, ())
+        if not variables:
+            creds.add_row(str(provider), "[dim]none needed[/dim]", "[dim]local[/dim]")
+            continue
+        found = credential_for(provider)
+        status = f"[green]set[/green] via {found}" if found else "[yellow]missing[/yellow]"
+        creds.add_row(str(provider), " or ".join(variables), status)
+
+    gh = (
+        "[green]set[/green]"
+        if os.environ.get(GITHUB_ENV_VAR)
+        else "[dim]falling back to gh CLI[/dim]"
+    )
+    creds.add_row("github", GITHUB_ENV_VAR, gh)
+    console.print(creds)
+
+    unreachable = [p for p in reachable if not has_credential(p)]
+    if unreachable:
+        console.print(
+            f"[yellow]![/yellow] no credential for: {', '.join(str(p) for p in unreachable)}. "
+            "Routes preferring these will fail their first candidate and fall back."
+        )
 
     if problems:
         for p in problems:
